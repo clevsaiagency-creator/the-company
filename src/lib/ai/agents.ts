@@ -71,13 +71,13 @@ Alex, 18 ani, antreprenor solo din Timișoara. Fus orar EET.
 
 1. SITE HUSTLE — vânzare site-uri la €150-250 la business-uri mici fără site
    - 1030 leads total în CSV (Google Maps scraping Timișoara)
-   - 125 contactate total | 108 calificate contactate | 8 interested | 0 convertite
-   - 138 leads calificate cu telefon, necontactate încă
-   - Status-uri în CSV: new / contacted / interested / not_interested / alternative / no_whatsapp / scos_are_site / scos_necalificat
+   - 108 calificate contactate | 8 interested | 4 confirmed | 0 convertite
+   - ~27 leads necontactate cu WhatsApp confirmat (gata de outreach imediat)
+   - Restul "new" (84) nu au WA verificat — necesită alt canal (DM social) sau verificare
    - 10+ site-uri demo construite și deployate pe Vercel
    - Outreach: WhatsApp principal (max 25-30/zi, anti-ban), email, Instagram DM
-   - Conversion rate: ~7.4% contact → interested (8 din 108 calificate contactate)
-   - Bottleneck: 8 interested neconvertiți, și volum outreach mic față de leads disponibile
+   - Conversion rate: ~7.4% contact → interested
+   - Bottleneck principal: 8 interested neconvertiți — PRIORITATEA #1
    - Tools în Site hustle/tools/: send_whatsapp.js, check_leads_stats.py, list_necontactate.py, scrape_google_maps.py
 
 2. AI AGENCY (Clevs AI) — voice agents + chatbots + automatizări pentru business-uri românești
@@ -108,15 +108,19 @@ SITE HUSTLE — vânzare site-uri la €150-250 la business-uri mici din Timișo
 LEADS (date reale din CSV):
 - Total leads: 1030
 - Calificate (fără site bun + cu telefon): 246
-- Contactate (calificate): 108
-- Necontactate calificate cu telefon: 138
-- Interested: 8 | Convertite: 0
+- Contactate total: 108 (din care 59 calificate)
+- Interested: 8 | Convertite: 0 | Confirmed: 4
 - Conversion rate: ~7.4% contact → interested
-- Status-uri posibile: new / contacted / interested / not_interested / alternative / no_whatsapp / scos_are_site / scos_necalificat / confirmed / rejected
+
+NECONTACTATE (status=new, breakdown real):
+- 27 cu WhatsApp confirmat — gata de contactat imediat
+- 84 fără canal WhatsApp verificat — necesită social media outreach sau verificare manuală
+- 10 au website_quality=good — nu sunt target pentru Site Hustle
+- 6 au doar Facebook — outreach DM posibil
 
 SITUAȚIE ACTUALĂ:
 - 8 leads interested neconvertiți — PRIORITATEA #1 (fiecare e €200 potențial)
-- 138 leads necontactate calificate — volum disponibil pentru outreach
+- 27 leads gata de contactat pe WhatsApp azi
 - Site-uri demo live pe Vercel pentru mai multe nișe (medical, restaurante, etc.)
 
 OUTREACH:
