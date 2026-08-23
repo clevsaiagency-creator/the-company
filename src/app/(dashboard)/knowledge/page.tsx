@@ -73,6 +73,8 @@ export default function KnowledgePage() {
   const [formCategory, setFormCategory] = useState("general");
   const [formProject, setFormProject] = useState("all");
   const [saving, setSaving] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [seedingMemories, setSeedingMemories] = useState(false);
 
   // ─── Load data ────────────────────────────────────────────────────────────
 
@@ -98,6 +100,34 @@ export default function KnowledgePage() {
       setMemories([]);
     }
     setLoading(false);
+  }
+
+  // ─── Seed ─────────────────────────────────────────────────────────────────
+
+  async function seedData() {
+    setSeeding(true);
+    try {
+      const res = await fetch("/api/knowledge/seed", { method: "POST" });
+      if (res.ok) {
+        await loadData();
+      }
+    } catch {
+      // ignore
+    }
+    setSeeding(false);
+  }
+
+  async function seedMemoriesData() {
+    setSeedingMemories(true);
+    try {
+      const res = await fetch("/api/memory/seed", { method: "POST" });
+      if (res.ok) {
+        await loadData();
+      }
+    } catch {
+      // ignore
+    }
+    setSeedingMemories(false);
   }
 
   // ─── Knowledge CRUD ───────────────────────────────────────────────────────
@@ -403,10 +433,20 @@ export default function KnowledgePage() {
               <p className="text-sm text-muted-foreground max-w-md mb-4">
                 Adauga informatii despre afacerea ta ca agentii sa lucreze informat.
               </p>
-              <Button onClick={openNewForm} size="sm">
-                <Plus className="h-4 w-4 mr-1" />
-                Prima intrare
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={openNewForm} size="sm" variant="outline">
+                  <Plus className="h-4 w-4 mr-1" />
+                  Prima intrare
+                </Button>
+                <Button onClick={seedData} size="sm" disabled={seeding}>
+                  {seeding ? (
+                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                  ) : (
+                    <BookOpen className="h-4 w-4 mr-1" />
+                  )}
+                  Seed date initiale
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="space-y-3">
@@ -474,10 +514,18 @@ export default function KnowledgePage() {
             <div className="flex flex-col items-center justify-center pt-20 text-center">
               <Brain className="h-12 w-12 text-muted-foreground/30 mb-4" />
               <h2 className="text-lg font-semibold mb-1">Nicio memorie</h2>
-              <p className="text-sm text-muted-foreground max-w-md">
+              <p className="text-sm text-muted-foreground max-w-md mb-4">
                 Agentii isi salveaza automat lucruri importante din conversatii.
-                Vorbeste cu ei si memoriile vor aparea aici.
+                Poti seda memorii initiale pentru ca agentii sa porneasca informat.
               </p>
+              <Button onClick={seedMemoriesData} size="sm" disabled={seedingMemories}>
+                {seedingMemories ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <Brain className="h-4 w-4 mr-1" />
+                )}
+                Seed memorii initiale
+              </Button>
             </div>
           ) : (
             <div className="space-y-6">

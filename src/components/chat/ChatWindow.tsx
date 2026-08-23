@@ -24,7 +24,7 @@ import type { DbConversation } from "@/lib/supabase";
 
 interface Message {
   id: string;
-  role: "user" | "agent" | "system" | "routing" | "delegation" | "lateral" | "tool";
+  role: "user" | "agent" | "system" | "routing" | "delegation" | "lateral" | "tool" | "delegate";
   agentSlug?: string;
   agentName?: string;
   agentEmoji?: string;
@@ -38,11 +38,13 @@ interface Message {
   toolDone?: boolean;
 }
 
-/** Strip [MEMORY: ...] and [TOOL: ...] tags from visible text */
+/** Strip all agent tags from visible text */
 function stripAgentTags(text: string): string {
   return text
     .replace(/\[MEMORY:\s*.+?\]/g, "")
     .replace(/\[TOOL:\s*.+?\]/g, "")
+    .replace(/\[DELEGATE:\s*[^|\]]+?\|[^\]]+?\]/g, "")
+    .replace(/\[KB_UPDATE:\s*[^|]+?\|[^|]+?\|[^\]]+?\]/g, "")
     .trimEnd();
 }
 
@@ -289,6 +291,25 @@ export default function ChatWindow({
               break;
 
             case "lateral_end":
+              break;
+
+            case "delegate_start":
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `delegate-${data.agentSlug}-${Date.now()}`,
+                  role: "delegate" as const,
+                  agentSlug: data.agentSlug,
+                  agentName: data.agentName,
+                  agentEmoji: data.agentEmoji,
+                  content: `${data.agentEmoji} **${data.agentName}** preia task-ul...`,
+                  timestamp: Date.now(),
+                  parentAgentSlug: data.parentAgentSlug,
+                },
+              ]);
+              break;
+
+            case "delegate_end":
               break;
 
             case "agent_start":
@@ -539,6 +560,18 @@ export default function ChatWindow({
                       <div className="h-px w-8 bg-border" />
                       {msg.content}
                       <div className="h-px w-8 bg-border" />
+                    </div>
+                  </div>
+                );
+              }
+
+              // Agent-initiated delegate status line
+              if (msg.role === "delegate") {
+                return (
+                  <div key={msg.id} className="flex justify-center">
+                    <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-500/5 border border-blue-500/10 text-xs text-blue-400/80">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                      {msg.content}
                     </div>
                   </div>
                 );

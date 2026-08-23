@@ -2,12 +2,14 @@
 
 import { createContext, useContext, useState, useEffect } from "react";
 
-export type ProjectSlug = "all" | "site-hustle" | "ai-agency" | "car-selling" | "music";
+export type ProjectSlug = "all" | "site-hustle" | "ai-agency" | "clevs-videos" | "trevvly" | "car-selling" | "music";
 
 export const PROJECTS = [
   { slug: "all" as ProjectSlug, name: "Toate Proiectele", emoji: "🏢" },
   { slug: "site-hustle" as ProjectSlug, name: "Site Hustle", emoji: "🌐" },
   { slug: "ai-agency" as ProjectSlug, name: "AI Agency", emoji: "🤖" },
+  { slug: "clevs-videos" as ProjectSlug, name: "Clevs AI Videos", emoji: "🎬" },
+  { slug: "trevvly" as ProjectSlug, name: "Trevvly", emoji: "✈️" },
   { slug: "car-selling" as ProjectSlug, name: "Car Selling", emoji: "🚗" },
   { slug: "music" as ProjectSlug, name: "Music", emoji: "🎵" },
 ];

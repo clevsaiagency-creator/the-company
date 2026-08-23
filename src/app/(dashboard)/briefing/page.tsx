@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Sun, Moon, RefreshCw, Loader2 } from "lucide-react";
+import { useProject } from "@/lib/project-context";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
@@ -11,12 +12,29 @@ interface BriefingData {
   generatedAt: string;
 }
 
+interface KBStat {
+  id: string;
+  title: string;
+  content: string;
+}
+
 export default function BriefingPage() {
+  const { projectSlug } = useProject();
   const [briefing, setBriefing] = useState<BriefingData | null>(null);
   const [loading, setLoading] = useState(false);
   const [briefingType, setBriefingType] = useState<"morning" | "evening">(
     new Date().getHours() < 15 ? "morning" : "evening"
   );
+  const [kbStats, setKbStats] = useState<KBStat[]>([]);
+
+  useEffect(() => {
+    fetch(`/api/knowledge?category=metrics&project=${projectSlug}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data)) setKbStats(data.slice(0, 4));
+      })
+      .catch(() => {});
+  }, [projectSlug]);
 
   const generateBriefing = async () => {
     setLoading(true);
@@ -179,26 +197,32 @@ export default function BriefingPage() {
           </div>
         )}
 
-        {/* Quick stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-8">
-          {[
-            { label: "Leads Total", value: "1,030", trend: "Site Hustle" },
-            { label: "Interested", value: "8", trend: "De contactat" },
-            { label: "Sites Built", value: "10", trend: "Complete" },
-            { label: "Revenue", value: "€0", trend: "Target: €1,500/mo" },
-          ].map((stat) => (
-            <div
-              key={stat.label}
-              className="rounded-xl border border-border bg-card p-4"
-            >
-              <p className="text-xs text-muted-foreground">{stat.label}</p>
-              <p className="text-2xl font-bold mt-1">{stat.value}</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                {stat.trend}
-              </p>
-            </div>
-          ))}
-        </div>
+        {/* Quick stats — din Knowledge Base */}
+        {kbStats.length > 0 ? (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-8">
+            {kbStats.map((stat) => (
+              <div
+                key={stat.id}
+                className="rounded-xl border border-border bg-card p-4"
+              >
+                <p className="text-xs text-muted-foreground">{stat.title}</p>
+                <p className="text-sm font-medium mt-1 line-clamp-3 leading-snug">
+                  {stat.content}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-8 rounded-xl border border-dashed border-border p-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              Adaugă date în{" "}
+              <a href="/knowledge" className="underline underline-offset-4 hover:text-foreground">
+                Knowledge Base
+              </a>{" "}
+              pentru a vedea statistici live aici.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

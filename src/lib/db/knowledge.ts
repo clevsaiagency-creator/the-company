@@ -120,3 +120,27 @@ export async function deleteKnowledge(id: string): Promise<boolean> {
   }
   return true;
 }
+
+export async function upsertKnowledge(
+  title: string,
+  projectSlug: string,
+  insert: KnowledgeInsert
+): Promise<KnowledgeEntry | null> {
+  // Caută entry existentă cu același titlu și project
+  const { data: existing } = await supabase
+    .from("knowledge_base")
+    .select("id")
+    .eq("title", title)
+    .eq("project_slug", projectSlug)
+    .single();
+
+  if (existing?.id) {
+    return updateKnowledge(existing.id, {
+      content: insert.content,
+      category: insert.category,
+      tags: insert.tags,
+    });
+  }
+
+  return createKnowledge({ ...insert, project_slug: projectSlug });
+}

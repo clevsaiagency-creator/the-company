@@ -4,7 +4,7 @@ import path from "path";
 import { spawn } from "child_process";
 import { getAgent, getDirectors, getSubAgents, PROJECT_FOCUS, type Agent } from "./agents";
 import { smartRoute, type RoutingResult } from "./router";
-import { getKnowledgeForAgent } from "@/lib/db/knowledge";
+import { getKnowledgeForAgent, upsertKnowledge } from "@/lib/db/knowledge";
 import { getMemoriesForPrompt, saveMemory } from "@/lib/db/memories";
 
 export interface Message {
@@ -36,6 +36,8 @@ export interface StreamChunk {
     | "tool_start"
     | "tool_output"
     | "tool_done"
+    | "delegate_start"
+    | "delegate_end"
     | "usage";
   agentSlug?: string;
   agentName?: string;
@@ -52,6 +54,7 @@ export interface StreamChunk {
   };
   parentAgentSlug?: string;
   delegationDepth?: number;
+  delegatedTask?: string;
   toolName?: string;
   toolArgs?: string[];
   exitCode?: number;
@@ -63,7 +66,9 @@ export interface StreamChunk {
 
 function getMockResponse(agentSlug: string): string {
   const agent = getAgent(agentSlug);
-  return `**${agent?.name || agentSlug} — MOCK MODE ACTIV**\n\nAplicația rulează fără API key. Setează \`ANTHROPIC_API_KEY\` și \`AI_MODE=live\` în \`.env.local\` pentru răspunsuri reale de la Claude.\n\nFără API key, agenții nu pot gândi sau răspunde la întrebările tale.`;
+  const hasKey = !!process.env.ANTHROPIC_API_KEY;
+  const mode = process.env.AI_MODE;
+  return `**${agent?.name || agentSlug} — MOCK MODE ACTIV**\n\nDebug: AI_MODE="${mode}" | ANTHROPIC_API_KEY=${hasKey ? "prezent" : "LIPSĂ"}\n\nPentru răspunsuri reale: asigură-te că \`.env.local\` are \`AI_MODE=live\` și \`ANTHROPIC_API_KEY\`, apoi **repornește serverul** (Ctrl+C → npm run dev).`;
 }
 
 // ─── Tool execution helpers ──────────────────────────────────────────────────
@@ -89,6 +94,21 @@ function extractTools(text: string): { cleanText: string; toolCalls: { name: str
   }
   const cleanText = text.replace(TOOL_REGEX, "").trimEnd();
   return { cleanText, toolCalls };
+}
+
+const DELEGATE_REGEX = /\[DELEGATE:\s*([^|\]]+?)\|([^\]]+?)\]/g;
+
+function extractDelegates(text: string): {
+  cleanText: string;
+  delegateCalls: { agentSlug: string; task: string }[];
+} {
+  const delegateCalls: { agentSlug: string; task: string }[] = [];
+  const regex = /\[DELEGATE:\s*([^|\]]+?)\|([^\]]+?)\]/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    delegateCalls.push({ agentSlug: match[1].trim(), task: match[2].trim() });
+  }
+  return { cleanText: text.replace(DELEGATE_REGEX, "").trimEnd(), delegateCalls };
 }
 
 async function runToolAndCollect(
@@ -163,6 +183,74 @@ async function* streamToolExecutions(
   }
 }
 
+async function* streamDelegateExecutions(
+  fullText: string,
+  parentAgentSlug: string,
+  originalMessages: Message[],
+  projectSlug: string,
+  depth: number = 0
+): AsyncGenerator<StreamChunk> {
+  if (depth > 3) return; // anti-loop protection
+
+  const { delegateCalls } = extractDelegates(fullText);
+  if (delegateCalls.length === 0) return;
+
+  for (const dc of delegateCalls) {
+    const agent = getAgent(dc.agentSlug);
+    if (!agent) continue;
+
+    yield {
+      type: "delegate_start",
+      agentSlug: agent.slug,
+      agentName: agent.name,
+      agentEmoji: agent.emoji,
+      parentAgentSlug,
+      delegatedTask: dc.task,
+      delegationDepth: depth + 1,
+    };
+
+    const msgs: Message[] = [
+      ...originalMessages,
+      {
+        id: crypto.randomUUID(),
+        role: "agent" as const,
+        agentSlug: parentAgentSlug,
+        content: `[Task delegat de ${parentAgentSlug}]: ${dc.task}`,
+        timestamp: Date.now(),
+      },
+    ];
+
+    let delegateFullResponse = "";
+
+    for await (const chunk of streamLiveResponse(agent, msgs, projectSlug)) {
+      if (chunk.type === "text" && chunk.content) {
+        delegateFullResponse += chunk.content;
+      }
+      yield chunk;
+    }
+
+    // Execute tools from delegate response
+    for await (const chunk of streamToolExecutions(delegateFullResponse, agent.slug)) {
+      yield chunk;
+    }
+
+    // Recursively handle sub-delegates
+    for await (const chunk of streamDelegateExecutions(
+      delegateFullResponse,
+      agent.slug,
+      msgs,
+      projectSlug,
+      depth + 1
+    )) {
+      yield chunk;
+    }
+
+    await processAgentResponse(delegateFullResponse, agent.slug, projectSlug);
+
+    yield { type: "delegate_end", agentSlug: agent.slug, parentAgentSlug };
+  }
+}
+
 function getLiveContext(): string {
   try {
     const briefingPath = path.join(process.cwd(), "..", "BRIEFING.md");
@@ -210,6 +298,24 @@ async function buildSystemPrompt(agent: Agent, projectSlug: string): Promise<str
     // Memories not available (table missing) — continue without it
   }
 
+  // Inject system capabilities — every agent knows what it can do
+  base += `\n\n=== SISTEMUL AI COMPANY ===
+Ești parte dintr-un sistem AI Company funcțional, nu un chatbot izolat. Infrastructura reală disponibilă ACUM:
+- Knowledge Base live: date reale despre afacerea lui Alex, injectate automat în context (vezi secțiunea KNOWLEDGE BASE de mai sus dacă există)
+- Memorie persistentă: lucruri importante din sesiuni anterioare, reținute per agent (vezi secțiunea MEMORIILE TALE de mai sus dacă există)
+- Tool Runner: poți rula scripturi Python reale din folderul /tools cu [TOOL: script.py arg1 arg2]
+- Salvare memorie: cu [MEMORY: conținut] → reținut permanent pentru sesiunile viitoare
+- Update Knowledge Base: cu [KB_UPDATE: Titlu | categorie | conținut]
+- Delegare directă la orice agent: cu [DELEGATE: agent-slug | descriere task concretă]
+  Exemplu: [DELEGATE: outreach-specialist | Trimite 25 mesaje WhatsApp la leads new din CSV]
+  Exemplu: [DELEGATE: sales-director | Analizează pipeline și raportează conversion rate]
+  Agenți disponibili (slug): ceo, coo, cto, cmo, sales-director, outreach-specialist, lead-qualifier, deal-closer, account-manager, finance-director, analytics-director, data-specialist, legal-director, support-director, frontend-lead, backend-lead
+
+DISPONIBIL când credentials configurate: gmail_send.py, gmail_read.py (Gmail API), calendar_check.py, calendar_create.py (Google Calendar), whatsapp_send.py (WhatsApp cu sesiune activă)
+NU DISPONIBIL ÎNCĂ: Meta Ads API (lipsă token), Stripe, Slack
+Când vorbești despre limitări, referă-te DOAR la ce lipsește — NU spune că nu ai memorie sau Knowledge Base, acestea funcționează.
+=== END SISTEM ===`;
+
   // Inject available tools
   const availableTools = getAvailableTools();
   if (availableTools.length > 0) {
@@ -229,6 +335,16 @@ Dacă în conversația asta afli ceva important pe care trebuie să-l reții pen
 Folosește asta doar pentru informații cu adevărat importante. Nu salva lucruri triviale.
 Tag-ul [MEMORY:] NU va fi vizibil utilizatorului.
 === END INSTRUCȚIUNE ===`;
+
+  // KB update instruction
+  base += `\n\n=== INSTRUCȚIUNE KNOWLEDGE BASE ===
+Dacă utilizatorul îți spune ceva nou sau actualizat despre afacerea sa (metrici, pipeline, vânzări, decizii, status proiecte), salvează-l în Knowledge Base adăugând la SFÂRȘITUL răspunsului tău:
+[KB_UPDATE: Titlu | categorie | conținut]
+Categorii disponibile: business, clients, processes, preferences, metrics, general
+Exemplu: [KB_UPDATE: Pipeline Site Hustle | metrics | Leads total: 1.045 | Interested: 9 | Revenue: €200]
+Folosește pentru update-uri importante și concrete. Nu salva opinii sau sfaturi, doar fapte și date.
+Tag-ul [KB_UPDATE:] NU va fi vizibil utilizatorului.
+=== END KB ===`;
 
   return base;
 }
@@ -290,6 +406,15 @@ export async function* streamChat(
     yield chunk;
   }
 
+  // Execute any delegate calls the agent requested (live mode only)
+  if (isLive) {
+    for await (const chunk of streamDelegateExecutions(
+      fullResponse, agent.slug, request.messages, projectSlug, 0
+    )) {
+      yield chunk;
+    }
+  }
+
   // Extract and save memories
   await processAgentResponse(fullResponse, agent.slug, projectSlug);
 
@@ -314,22 +439,24 @@ async function* streamBoardMeeting(
     };
 
     let response: string;
+    const boardMessages = [
+      ...request.messages,
+      ...previousResponses.map((r) => ({
+        id: crypto.randomUUID(),
+        role: "agent" as const,
+        agentSlug: r.agent,
+        content: r.content,
+        timestamp: Date.now(),
+      })),
+    ];
+
     if (isLive) {
       response = "";
-      for await (const chunk of streamLiveResponse(director, [
-        ...request.messages,
-        ...previousResponses.map((r) => ({
-          id: crypto.randomUUID(),
-          role: "agent" as const,
-          agentSlug: r.agent,
-          content: r.content,
-          timestamp: Date.now(),
-        })),
-      ], projectSlug)) {
+      for await (const chunk of streamLiveResponse(director, boardMessages, projectSlug)) {
         if (chunk.type === "text" && chunk.content) {
           response += chunk.content;
-          yield chunk;
         }
+        yield chunk;
       }
     } else {
       response = getMockResponse(director.slug);
@@ -340,10 +467,25 @@ async function* streamBoardMeeting(
       }
     }
 
+    yield { type: "agent_end", agentSlug: director.slug };
+
+    // Execute tools from board meeting response
+    for await (const chunk of streamToolExecutions(response, director.slug)) {
+      yield chunk;
+    }
+
+    // Execute delegate calls from board meeting response
+    if (isLive) {
+      for await (const chunk of streamDelegateExecutions(
+        response, director.slug, boardMessages, projectSlug, 0
+      )) {
+        yield chunk;
+      }
+    }
+
     // Extract and save memories from response
     const cleanResponse = await processAgentResponse(response, director.slug, projectSlug);
     previousResponses.push({ agent: director.slug, content: cleanResponse });
-    yield { type: "agent_end", agentSlug: director.slug };
     await new Promise((r) => setTimeout(r, 300));
   }
 
@@ -455,16 +597,62 @@ async function saveExtractedMemories(
   }
 }
 
-/** Post-process a complete agent response: strip [MEMORY:] tags and save them */
+// ─── KB Update extraction ───────────────────────────────────────────────────
+
+const KB_UPDATE_REGEX = /\[KB_UPDATE:\s*(.+?)\|(.+?)\|(.+?)\]/g;
+
+interface KBUpdateItem {
+  title: string;
+  category: string;
+  content: string;
+}
+
+function extractKBUpdates(text: string): { cleanText: string; updates: KBUpdateItem[] } {
+  const updates: KBUpdateItem[] = [];
+  let match;
+  while ((match = KB_UPDATE_REGEX.exec(text)) !== null) {
+    updates.push({
+      title: match[1].trim(),
+      category: match[2].trim(),
+      content: match[3].trim(),
+    });
+  }
+  const cleanText = text.replace(KB_UPDATE_REGEX, "").trimEnd();
+  return { cleanText, updates };
+}
+
+async function saveExtractedKBUpdates(
+  updates: KBUpdateItem[],
+  projectSlug: string
+): Promise<void> {
+  for (const update of updates) {
+    try {
+      await upsertKnowledge(update.title, projectSlug, {
+        title: update.title,
+        category: update.category,
+        content: update.content,
+        project_slug: projectSlug,
+      });
+    } catch {
+      // Silent fail
+    }
+  }
+}
+
+/** Post-process a complete agent response: strip [MEMORY:] and [KB_UPDATE:] tags and save them */
 async function processAgentResponse(
   fullText: string,
   agentSlug: string,
   projectSlug: string
 ): Promise<string> {
-  const { cleanText, memories } = extractMemories(fullText);
+  const { cleanText: afterMemory, memories } = extractMemories(fullText);
   if (memories.length > 0) {
     // Fire and forget — don't block the stream
     saveExtractedMemories(agentSlug, projectSlug, memories);
+  }
+  const { cleanText, updates } = extractKBUpdates(afterMemory);
+  if (updates.length > 0) {
+    saveExtractedKBUpdates(updates, projectSlug);
   }
   return cleanText;
 }
@@ -611,7 +799,7 @@ async function* streamOrchestrated(
   if (routing.delegationDepth === "deep") {
     yield* streamWithDelegation(primaryAgent, request, isLive, projectSlug);
   } else {
-    // Shallow — just run the agent directly
+    // Shallow — run agent directly with full post-processing
     yield {
       type: "agent_start",
       agentSlug: primaryAgent.slug,
@@ -619,11 +807,17 @@ async function* streamOrchestrated(
       agentEmoji: primaryAgent.emoji,
     };
 
+    let primaryResponse = "";
     if (isLive) {
-      yield* streamLiveResponse(primaryAgent, request.messages, projectSlug);
+      for await (const chunk of streamLiveResponse(primaryAgent, request.messages, projectSlug)) {
+        if (chunk.type === "text" && chunk.content) {
+          primaryResponse += chunk.content;
+        }
+        yield chunk;
+      }
     } else {
-      const response = getMockResponse(primaryAgent.slug);
-      const words = response.split(" ");
+      primaryResponse = getMockResponse(primaryAgent.slug);
+      const words = primaryResponse.split(" ");
       for (let i = 0; i < words.length; i++) {
         yield { type: "text", content: (i > 0 ? " " : "") + words[i] };
         await new Promise((r) => setTimeout(r, 20));
@@ -631,6 +825,19 @@ async function* streamOrchestrated(
     }
 
     yield { type: "agent_end", agentSlug: primaryAgent.slug };
+
+    // Post-process: tools, delegates, memories
+    for await (const chunk of streamToolExecutions(primaryResponse, primaryAgent.slug)) {
+      yield chunk;
+    }
+    if (isLive) {
+      for await (const chunk of streamDelegateExecutions(
+        primaryResponse, primaryAgent.slug, request.messages, projectSlug, 0
+      )) {
+        yield chunk;
+      }
+    }
+    await processAgentResponse(primaryResponse, primaryAgent.slug, projectSlug);
   }
 
   // Step 3: Run secondary agents (cross-department)
@@ -648,11 +855,17 @@ async function* streamOrchestrated(
         agentEmoji: secondaryAgent.emoji,
       };
 
+      let secondaryResponse = "";
       if (isLive) {
-        yield* streamLiveResponse(secondaryAgent, request.messages, projectSlug);
+        for await (const chunk of streamLiveResponse(secondaryAgent, request.messages, projectSlug)) {
+          if (chunk.type === "text" && chunk.content) {
+            secondaryResponse += chunk.content;
+          }
+          yield chunk;
+        }
       } else {
-        const response = getMockResponse(secondaryAgent.slug);
-        const words = response.split(" ");
+        secondaryResponse = getMockResponse(secondaryAgent.slug);
+        const words = secondaryResponse.split(" ");
         for (let i = 0; i < words.length; i++) {
           yield { type: "text", content: (i > 0 ? " " : "") + words[i] };
           await new Promise((r) => setTimeout(r, 20));
@@ -660,6 +873,19 @@ async function* streamOrchestrated(
       }
 
       yield { type: "agent_end", agentSlug: secondaryAgent.slug };
+
+      // Post-process: tools, delegates, memories
+      for await (const chunk of streamToolExecutions(secondaryResponse, secondaryAgent.slug)) {
+        yield chunk;
+      }
+      if (isLive) {
+        for await (const chunk of streamDelegateExecutions(
+          secondaryResponse, secondaryAgent.slug, request.messages, projectSlug, 0
+        )) {
+          yield chunk;
+        }
+      }
+      await processAgentResponse(secondaryResponse, secondaryAgent.slug, projectSlug);
     }
   }
 
@@ -710,10 +936,24 @@ async function* streamWithDelegation(
     }
   }
 
+  yield { type: "agent_end", agentSlug: director.slug };
+
+  // Execute tools from director's initial response
+  for await (const chunk of streamToolExecutions(directorResponse, director.slug)) {
+    yield chunk;
+  }
+
+  // Execute delegate calls from director's initial response
+  if (isLive) {
+    for await (const chunk of streamDelegateExecutions(
+      directorResponse, director.slug, request.messages, projectSlug, 0
+    )) {
+      yield chunk;
+    }
+  }
+
   // Extract director memories
   directorResponse = await processAgentResponse(directorResponse, director.slug, projectSlug);
-
-  yield { type: "agent_end", agentSlug: director.slug };
 
   // Step 2: Get delegation plan
   let delegateSlugs: { slug: string; task: string }[] = [];
@@ -770,6 +1010,30 @@ async function* streamWithDelegation(
       for (let i = 0; i < words.length; i++) {
         yield { type: "text", content: (i > 0 ? " " : "") + words[i] };
         await new Promise((r) => setTimeout(r, 15));
+      }
+    }
+
+    // Execute tools from delegate response
+    for await (const chunk of streamToolExecutions(delegateContent, delegateAgent.slug)) {
+      yield chunk;
+    }
+
+    // Execute sub-delegate calls from delegate response (live only)
+    if (isLive) {
+      const delegateMsgs: Message[] = [
+        ...request.messages,
+        {
+          id: crypto.randomUUID(),
+          role: "agent" as const,
+          agentSlug: director.slug,
+          content: `[Instrucțiune de la ${director.name}]: ${delegate.task}`,
+          timestamp: Date.now(),
+        },
+      ];
+      for await (const chunk of streamDelegateExecutions(
+        delegateContent, delegateAgent.slug, delegateMsgs, projectSlug, 1
+      )) {
+        yield chunk;
       }
     }
 
@@ -864,30 +1128,34 @@ async function* streamWithDelegation(
       agentEmoji: director.emoji,
     };
 
-    if (isLive) {
-      const summaryMessages: Message[] = [
-        ...request.messages,
-        ...delegateResponses.map((r) => ({
-          id: crypto.randomUUID(),
-          role: "agent" as const,
-          agentSlug: r.agent,
-          content: r.content,
-          timestamp: Date.now(),
-        })),
-        {
-          id: crypto.randomUUID(),
-          role: "user" as const,
-          content: `Ai primit rapoartele echipei tale. Fă un rezumat executiv cu concluziile și acțiunile recomandate.`,
-          timestamp: Date.now(),
-        },
-      ];
+    let summaryResponse = "";
+    const summaryMessages: Message[] = [
+      ...request.messages,
+      ...delegateResponses.map((r) => ({
+        id: crypto.randomUUID(),
+        role: "agent" as const,
+        agentSlug: r.agent,
+        content: r.content,
+        timestamp: Date.now(),
+      })),
+      {
+        id: crypto.randomUUID(),
+        role: "user" as const,
+        content: `Ai primit rapoartele echipei tale. Fă un rezumat executiv cu concluziile și acțiunile recomandate.`,
+        timestamp: Date.now(),
+      },
+    ];
 
+    if (isLive) {
       for await (const chunk of streamLiveResponse(director, summaryMessages, projectSlug)) {
-        if (chunk.type === "text") yield chunk;
+        if (chunk.type === "text" && chunk.content) {
+          summaryResponse += chunk.content;
+        }
+        yield chunk;
       }
     } else {
-      const summary = MOCK_SUMMARIES[director.slug] || `Rezumat complet de la ${director.name}. Echipa a raportat, acțiunile sunt clare.`;
-      const words = summary.split(" ");
+      summaryResponse = MOCK_SUMMARIES[director.slug] || `Rezumat complet de la ${director.name}. Echipa a raportat, acțiunile sunt clare.`;
+      const words = summaryResponse.split(" ");
       for (let i = 0; i < words.length; i++) {
         yield { type: "text", content: (i > 0 ? " " : "") + words[i] };
         await new Promise((r) => setTimeout(r, 20));
@@ -895,6 +1163,19 @@ async function* streamWithDelegation(
     }
 
     yield { type: "agent_end", agentSlug: director.slug };
+
+    // Post-process summary: tools, delegates, memories
+    for await (const chunk of streamToolExecutions(summaryResponse, director.slug)) {
+      yield chunk;
+    }
+    if (isLive) {
+      for await (const chunk of streamDelegateExecutions(
+        summaryResponse, director.slug, summaryMessages, projectSlug, 0
+      )) {
+        yield chunk;
+      }
+    }
+    await processAgentResponse(summaryResponse, director.slug, projectSlug);
   }
 
   // Emit delegation end
